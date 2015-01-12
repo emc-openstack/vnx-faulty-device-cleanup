@@ -31,14 +31,21 @@ from oslo.config import cfg
 from nova import utils
 
 
-conn_opts = [
+default_opts = [
     cfg.StrOpt('sql_connection',
                default='',
                help='Connection of SQL data base'),
 ]
 
+database_opts = [
+    cfg.StrOpt('connection',
+               default='',
+               help='Connection of SQL data base'),
+]
+
 CONF = cfg.CONF
-CONF.register_opts(conn_opts)
+CONF.register_opts(default_opts)
+CONF.register_opts(database_opts, 'database')
 
 
 def usage():
@@ -66,9 +73,9 @@ class FaultyDevicesCleaner(object):
     def _parse_sql_connection(self, sql_conn):
         self.conn_info = None
 
-        re_sql_connection = r"(?P<db_type>(\w)+)://(?P<user>(\w)+):" \
-                            r"(?P<password>(\w)+)@" \
-                            r"(?P<host>(.)+)/(?P<db>(\w)+)\?charset=utf8"
+        re_sql_connection = r"^(?P<db_type>[^:]+)://(?P<user>[^:]+):" \
+                            r"(?P<password>.+)@" \
+                            r"(?P<host>[^/]+)/(?P<db>[^?]+)"
         m = re.search(re_sql_connection, sql_conn)
         if m:
             if m.group('db_type') != 'mysql':
@@ -289,6 +296,7 @@ if __name__ == "__main__":
               " 'map in use' failure may show up during cleanup.")
 
     CONF(sys.argv[1:])
+    CONF.sql_connection = CONF.sql_connection or CONF.database.connection
     if CONF.sql_connection == '':
         print('Error: This script only supports MySQL as Nova database!')
         exit(1)
