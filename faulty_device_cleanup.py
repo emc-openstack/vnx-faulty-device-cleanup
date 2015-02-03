@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) 2014 EMC Corporation, Inc.
+# Copyright (c) 2014 - 2015 EMC Corporation, Inc.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,7 +14,11 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 """
-The script to cleanup the iSCSI faulty devices in Nova compute node
+The script to clean up the iSCSI multipath faulty devices
+
+Version history:
+    0.1.0 - Initial version
+    0.1.1 - More robust support of SQL connection info
 """
 
 import glob
@@ -53,8 +57,7 @@ def usage():
 Usage:
     python %s --config-file /etc/nova/nova.conf
 
-Note: This script shall be executed in Nova compute node,
-and intend to clean up the iSCSI multipath faulty devices
+Note: This script intend to clean up the iSCSI multipath faulty devices
 hosted by VNX Block Storage.""" % sys.argv[0])
 
 
