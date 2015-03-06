@@ -19,37 +19,24 @@ The script to clean up the iSCSI multipath faulty devices
 Version history:
     0.1.0 - Initial version
     0.1.1 - More robust support of SQL connection info
+    0.1.2 - Use nova.db.sqlalchemy instead of MySQLdb for DB access
 """
 
 import glob
 import json
-import MySQLdb as DataBase
 import os
 import re
 import string
 import sys
-import time
 
 from oslo.config import cfg
 
+from nova import context
+from nova.db.sqlalchemy import api as db_api
+from nova.db.sqlalchemy import models
 from nova import utils
 
-
-default_opts = [
-    cfg.StrOpt('sql_connection',
-               default='',
-               help='Connection of SQL data base'),
-]
-
-database_opts = [
-    cfg.StrOpt('connection',
-               default='',
-               help='Connection of SQL data base'),
-]
-
 CONF = cfg.CONF
-CONF.register_opts(default_opts)
-CONF.register_opts(database_opts, 'database')
 
 
 def usage():
@@ -57,92 +44,49 @@ def usage():
 Usage:
     python %s --config-file /etc/nova/nova.conf
 
-Note: This script intend to clean up the iSCSI multipath faulty devices
+Note: This script intends to clean up the iSCSI multipath faulty devices
 hosted by VNX Block Storage.""" % sys.argv[0])
 
 
 class FaultyDevicesCleaner(object):
-    def __init__(self, sql_conn):
+    def __init__(self):
         # Get host name of Nova computer node.
         self.host_name = self._get_host_name()
-
-        # Get the connection information of Nova database
-        self.conn_info = self._parse_sql_connection(sql_conn)
 
     def _get_host_name(self):
         (out, err) = utils.execute('hostname')
         return out
 
-    def _parse_sql_connection(self, sql_conn):
-        self.conn_info = None
-
-        re_sql_connection = r"^(?P<db_type>[^:]+)://(?P<user>[^:]+):" \
-                            r"(?P<password>.+)@" \
-                            r"(?P<host>[^/]+)/(?P<db>[^?]+)"
-        m = re.search(re_sql_connection, sql_conn)
-        if m:
-            if m.group('db_type') != 'mysql':
-                raise Exception('Error: This script only supports MySQL as Nova database!')
-
-            conn_info = {
-                'host': m.group('host'),
-                'user': m.group('user'),
-                'password': m.group('password'),
-                'db': m.group('db'),
-                }
-            return conn_info
-
-    def _execute_sql_query(self, stmt):
-        if self.conn_info is None:
-            print 'Error: Empty connection information to Nova database'
-            return None
-
-        # Open database connection
-        db = DataBase.connect(self.conn_info['host'],
-                             self.conn_info['user'],
-                             self.conn_info['password'],
-                             self.conn_info['db'])
-
-        # prepare a cursor object using cursor() method
-        cursor = db.cursor()
-
-        cursor.execute(stmt)
-
-        # Fetch and output
-        result = cursor.fetchall()
-
-        # disconnect from server
-        db.close()
-
-        return result
-
     def _get_ncpu_emc_target_info_list(self):
         target_info_list = []
         # Find the targets used by VM on the compute node
-        stmt = (('select connection_info '
-                 'from block_device_mapping join instances '
-                 'where block_device_mapping.instance_uuid=instances.uuid '
-                 'and block_device_mapping.deleted=0 '
-                 'and instances.host="%(host)s" '
-                 'and instances.deleted=0 '
-                 'and block_device_mapping.connection_info is not NULL ')
-                % {'host': string.strip(self.host_name)})
+        bdms = db_api.model_query(context.get_admin_context(),
+                                  models.BlockDeviceMapping,
+                                  session = db_api.get_session())
+        bdms = bdms.filter(models.BlockDeviceMapping.connection_info != None)
+        bdms = bdms.join(models.BlockDeviceMapping.instance).filter_by(
+            host=string.strip(self.host_name))
 
-        result = self._execute_sql_query(stmt)
+        for bdm in bdms:
+            conn_info = json.loads(bdm.connection_info)
 
-        if result is None:
-            return target_info_list
-
-        for tuple_conn_info in result:
-            conn_info = json.loads(tuple_conn_info[0])
-
-            if ('data' in conn_info and
-                'com.emc' in conn_info['data']['target_iqn']):
-                target_info = {
-                    'target_iqn': conn_info['data']['target_iqn'],
-                    'target_lun': conn_info['data']['target_lun'],
-                }
-                target_info_list.append(target_info)
+            if 'data' in conn_info:
+                if 'target_iqns' in conn_info['data']:
+                    target_iqns = conn_info['data']['target_iqns']
+                    target_luns = conn_info['data']['target_luns']
+                elif 'target_iqn' in conn_info['data']:
+                    target_iqns = [conn_info['data']['target_iqn']]
+                    target_luns = [conn_info['data']['target_lun']]
+                else:
+                    target_iqns = []
+                    target_luns = []
+                for target_iqn, target_lun in zip(target_iqns, target_luns):
+                    if 'com.emc' in target_iqn:
+                        target_info = {
+                            'target_iqn': target_iqn,
+                            'target_lun': target_lun,
+                        }
+                        target_info_list.append(target_info)
 
         return target_info_list
 
@@ -299,16 +243,12 @@ if __name__ == "__main__":
               " 'map in use' failure may show up during cleanup.")
 
     CONF(sys.argv[1:])
-    CONF.sql_connection = CONF.sql_connection or CONF.database.connection
-    if CONF.sql_connection == '':
-        print('Error: This script only supports MySQL as Nova database!')
-        exit(1)
 
     # connect_volume and disconnect_volume in nova/virt/libvirt/volume.py
     # need be adjusted to take the same 'external=True' lock for
     # synchronization
     @utils.synchronized('connect_volume', external=True)
     def do_cleanup():
-        cleaner = FaultyDevicesCleaner(CONF.sql_connection)
+        cleaner = FaultyDevicesCleaner()
         cleaner.cleanup()
     do_cleanup()

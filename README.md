@@ -24,8 +24,6 @@ It is difficult for OpenStack common logic to avoid faulty devices in all corner
 
 * This script only support iSCSI storage from VNX array
 * The usage is `faulty_device_cleanup.py --config-file /etc/nova/nova.conf`
-* Current implementation has dependency on some OpenStack-specific modules (such as nova.utils and oslo.config) and DB-related module (such as MySQLdb.DataBase).
-* The script will use the `sql_connection` or `database.connection` in `/etc/nova/nova.conf` to query Nova DB to decide whether a faulty device is still in use.
-* MySQL is the only supported DB so far.
+* Current implementation has dependency on some OpenStack-specific packages/modules (such as nova.db.sqlalchemy, nova.context, nova.utils and oslo.config).
 * It is recommended to use `flush_on_last_del yes` in `defaults` section of `/etc/multipath.conf`. Otherwise `map in use` failure may come out during cleanup and delay the deletion of multipath faulty devices
 
