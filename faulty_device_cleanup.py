@@ -20,6 +20,7 @@ Version history:
     0.1.0 - Initial version
     0.1.1 - More robust support of SQL connection info
     0.1.2 - Use nova.db.sqlalchemy instead of MySQLdb for DB access
+    0.1.3 - Add more meaningful output
 """
 
 import glob
@@ -42,14 +43,18 @@ CONF = cfg.CONF
 def usage():
     print("""
 Usage:
-    python %s --config-file /etc/nova/nova.conf
+    python %s --config-file /etc/nova/nova.conf [--detection-only]
 
 Note: This script intends to clean up the iSCSI multipath faulty devices
 hosted by VNX Block Storage.""" % sys.argv[0])
 
 
 class FaultyDevicesCleaner(object):
-    def __init__(self):
+    def __init__(self, detection_only=False):
+        self.detection_only = detection_only
+        self.faulty_device_num = 0
+        self.faulty_path_num = 0
+        self.faulty_devices = []
         # Get host name of Nova computer node.
         self.host_name = self._get_host_name()
 
@@ -62,7 +67,7 @@ class FaultyDevicesCleaner(object):
         # Find the targets used by VM on the compute node
         bdms = db_api.model_query(context.get_admin_context(),
                                   models.BlockDeviceMapping,
-                                  session = db_api.get_session())
+                                  session=db_api.get_session())
         bdms = bdms.filter(models.BlockDeviceMapping.connection_info != None)
         bdms = bdms.join(models.BlockDeviceMapping.instance).filter_by(
             host=string.strip(self.host_name))
@@ -147,14 +152,22 @@ class FaultyDevicesCleaner(object):
                 # Copy '1' from stdin to the device delete control file
                 utils.execute('cp', '/dev/stdin', device_delete,
                               process_input='1', run_as_root=True)
+                print("Info: Deleted faulty iSCSI path %s." % path)
             else:
-                print "Unable to delete %s" % real_path
+                print("Warning: Unable to delete %s." % real_path)
 
     def _cleanup_faulty_paths(self):
         non_ncpu_target_info_map = self._get_non_ncpu_target_info_map()
         for paths in non_ncpu_target_info_map.itervalues():
             if self._all_related_paths_faulty(paths):
+                if self.detection_only:
+                    self.faulty_path_num += len(paths)
+                    # Check next without deleting the paths
+                    continue
                 self._delete_all_related_paths(paths)
+        if self.detection_only:
+            print("Info: Found %s faulty iSCSI paths to be deleted."
+                  % self.faulty_path_num)
 
     def _cleanup_faulty_dm_devices(self):
         out_ll, err_ll = self._run_multipath(['-ll'],
@@ -181,12 +194,34 @@ class FaultyDevicesCleaner(object):
         path_pat = r'- \d+:\d+:\d+:\d+ '
         path_m = re.compile(path_pat)
         for m in dm_m.finditer(out_ll):
+            if self.detection_only:
+                if not ('active ready' in m.group(0)):
+                    self.faulty_device_num += 1
+                    self.faulty_devices.append(m.group(1))
+                    continue
             if not path_m.search(m.group(0)):
                 # Only #:#:#:# remain in the output, all the paths of the dm
                 # device should have been deleted. No need to keep the device
                 out_f, err_f = self._run_multipath(['-f', m.group(1)],
                                                    run_as_root=True,
                                                    check_exit_code=False)
+                if "map in use" in out_f + err_f:
+                    print("Warning: Could not flush "
+                          "faulty multipath device %s."
+                          % m.group(1))
+                    print("Info: Please retry later "
+                          "or execute 'dmsetup message %s 0 fail_if_no_path' "
+                          "before retrying."
+                          % m.group(1))
+                else:
+                    print("Info: Deleted faulty multipath device %s."
+                          % m.group(1))
+
+        if self.detection_only:
+            print("Info: Found %s multipath faulty devices to be deleted."
+                  % self.faulty_device_num)
+            for fdm in self.faulty_devices:
+                print("Info: %s is faulty." % fdm)
 
     def cleanup(self):
         self._cleanup_faulty_paths()
@@ -214,15 +249,25 @@ class FaultyDevicesCleaner(object):
                                    *multipath_command,
                                    run_as_root=True,
                                    check_exit_code=check_exit_code)
-        print ("multipath %(command)s: stdout=%(out)s stderr=%(err)s"
-               % {'command': multipath_command, 'out': out, 'err': err})
+        if ('debug' in CONF and CONF.debug) or False:
+            print(("Debug: multipath %(command)s\n"
+                   "stdout=\n%(out)s\n"
+                   "stderr=\n%(err)s")
+                  % {'command': multipath_command,
+                     'out': out,
+                     'err': err})
 
         return out, err
 
-if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] != '--config-file':
+
+def main():
+    if len(sys.argv) < 3 or sys.argv[1] != '--config-file':
         usage()
         exit(1)
+    detection_only = False
+    if '--detection-only' in sys.argv:
+        detection_only = True
+        sys.argv.remove('--detection-only')
 
     out, err = utils.execute('which', 'multipath', check_exit_code=False)
     if 'multipath' not in out:
@@ -248,7 +293,10 @@ if __name__ == "__main__":
     # need be adjusted to take the same 'external=True' lock for
     # synchronization
     @utils.synchronized('connect_volume', external=True)
-    def do_cleanup():
-        cleaner = FaultyDevicesCleaner()
+    def do_cleanup(detection_only):
+        cleaner = FaultyDevicesCleaner(detection_only)
         cleaner.cleanup()
-    do_cleanup()
+    do_cleanup(detection_only)
+
+if __name__ == "__main__":
+    main()
