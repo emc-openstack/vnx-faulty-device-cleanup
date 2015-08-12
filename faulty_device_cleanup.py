@@ -21,6 +21,7 @@ Version history:
     0.1.1 - More robust support of SQL connection info
     0.1.2 - Use nova.db.sqlalchemy instead of MySQLdb for DB access
     0.1.3 - Add more meaningful output
+    0.1.4 - Fix 'NoneType' and 'KeyError' issues
 """
 
 import glob
@@ -75,10 +76,15 @@ class FaultyDevicesCleaner(object):
         for bdm in bdms:
             conn_info = json.loads(bdm.connection_info)
 
-            if 'data' in conn_info:
+            if conn_info is not None and 'data' in conn_info:
                 if 'target_iqns' in conn_info['data']:
                     target_iqns = conn_info['data']['target_iqns']
-                    target_luns = conn_info['data']['target_luns']
+                    # Compatible check for VNX icehouse driver
+                    if 'target_luns' in conn_info['data']:
+                        target_luns = conn_info['data']['target_luns']
+                    else:
+                        target_luns = ([conn_info['data']['target_lun']]
+                                       * len(target_iqns))
                 elif 'target_iqn' in conn_info['data']:
                     target_iqns = [conn_info['data']['target_iqn']]
                     target_luns = [conn_info['data']['target_lun']]
