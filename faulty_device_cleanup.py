@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # Copyright (c) 2014 - 2015 EMC Corporation, Inc.
+# Copyright (c) 2016 Federal University of Sao Carlos
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -22,6 +23,7 @@ Version history:
     0.1.2 - Use nova.db.sqlalchemy instead of MySQLdb for DB access
     0.1.3 - Add more meaningful output
     0.1.4 - Fix 'NoneType' and 'KeyError' issues
+    0.1.5 - Remove deprecated direct DB access in favor of RPC API
 """
 
 import glob
@@ -31,12 +33,18 @@ import re
 import string
 import sys
 
-from oslo.config import cfg
+from oslo_config import cfg
 
-from nova import context
-from nova.db.sqlalchemy import api as db_api
-from nova.db.sqlalchemy import models
+import nova.context
 from nova import utils
+
+from nova.conductor import rpcapi as conductor_rpcapi
+from nova import objects
+from nova.objects import base as objects_base
+from nova import rpc
+
+import logging
+logging.basicConfig()
 
 CONF = cfg.CONF
 
@@ -66,15 +74,15 @@ class FaultyDevicesCleaner(object):
     def _get_ncpu_emc_target_info_list(self):
         target_info_list = []
         # Find the targets used by VM on the compute node
-        bdms = db_api.model_query(context.get_admin_context(),
-                                  models.BlockDeviceMapping,
-                                  session=db_api.get_session())
-        bdms = bdms.filter(models.BlockDeviceMapping.connection_info != None)
-        bdms = bdms.join(models.BlockDeviceMapping.instance).filter_by(
-            host=string.strip(self.host_name))
+        context = nova.context.get_admin_context()
+        host_name = string.strip(self.host_name)
+        instance_uuids = [inst.uuid for inst in
+                          objects.InstanceList.get_by_host(context, host_name)]
+        bdms = objects.BlockDeviceMappingList\
+                      .get_by_instance_uuids(context, instance_uuids)
 
         for bdm in bdms:
-            conn_info = json.loads(bdm.connection_info)
+            conn_info = bdm.connection_info and json.loads(bdm.connection_info)
 
             if conn_info is not None and 'data' in conn_info:
                 if 'target_iqns' in conn_info['data']:
@@ -294,6 +302,14 @@ def main():
               " 'map in use' failure may show up during cleanup.")
 
     CONF(sys.argv[1:])
+
+    rpc.set_defaults(control_exchange='nova')
+    rpc.init(CONF)
+
+    utils.monkey_patch()
+    objects.register_all()
+    objects_base.NovaObject.indirection_api = \
+        conductor_rpcapi.ConductorAPI()
 
     # connect_volume and disconnect_volume in nova/virt/libvirt/volume.py
     # need be adjusted to take the same 'external=True' lock for
